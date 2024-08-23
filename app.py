@@ -25,14 +25,14 @@ def query_ollama(prompt):
         "stream": False,
     }
 
-    print("GOO!!")
+    print("Starting ollama query")
     try:
-        print("22")
+        print("Ollama is working!!")
         response = requests.post(url, json=data, headers=headers)
         response.raise_for_status()  # Raise an exception for HTTP errors
         return response.json()
     except requests.exceptions.RequestException as e:
-        print("33")
+        print("Ollama errored!")
         return {"error": str(e)}
 
 def process_image(img):
