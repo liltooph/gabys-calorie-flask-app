@@ -1,4 +1,7 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, redirect, url_for, flash
+from flask_sqlalchemy import SQLAlchemy
+from flask_bcrypt import Bcrypt
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from ultralytics import YOLO
 from PIL import Image
 import numpy as np
@@ -15,6 +18,38 @@ load_dotenv()
 
 # Initialize the Flask app
 app = Flask(__name__)
+
+POSTGRES_USERNAME = os.getenv("SQL_SERVER_USERNAME")
+POSTGRES_PASSWORD = os.getenv("SQL_SERVER_PASSWORD")
+POSTGRES_DATABASE_NAME = os.getenv("SQL_SERVER_DATABASE_NAME")
+
+# Configurations
+app.config['SQLALCHEMY_DATABASE_URI'] = f'postgresql+psycopg2://{POSTGRES_USERNAME}:{POSTGRES_PASSWORD}@localhost/{POSTGRES_DATABASE_NAME}'
+app.config['SECRET_KEY'] = os.urandom(24)
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Initialize Extensions
+db = SQLAlchemy(app)
+bcrypt = Bcrypt(app)
+login_manager = LoginManager(app)
+login_manager.login_view = 'login'
+
+# User Model
+class User(db.Model, UserMixin):
+    __tablename__ = 'calorieappusers'
+
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password = db.Column(db.String(120), nullable=False)
+
+    def __init__(self, username, password):
+        self.username = username
+        self.password = password
+
+# User Loader for Flask-Login
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
 
 # Load the YOLOv8 model (you can replace 'yolov8n.pt' with your trained model)
 model = YOLO('yolov8n.pt')  # YOLOv8n is the nano version, replace with your model if needed
@@ -152,9 +187,38 @@ def signup():
     if not validate_password(password):
         return jsonify({'message': 'Password must be between 4 to 50 characters in length.', 'status': 'fail'})
 
-    # If all validations pass
-    return jsonify({'message': 'Thank you! You are now logged in.', 'status': 'success'})
+    # You gotta put something here to interact with the sql server
+    existing_user = User.query.filter_by(username=username).first()
+    if existing_user:
+        return jsonify({'message': 'Username already exists. Please choose a different one.', 'status': 'fail'})
 
+    # Hash the password and save the user to the database
+    hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
+    new_user = User(username=username, password=hashed_password)
+    db.session.add(new_user)
+    db.session.commit()
+    # If all validations pass
+
+    print("TEST: " + hashed_password)
+
+    return jsonify({'message': 'Registration successful! You can now log in.', 'status': 'success'})
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+
+    user = User.query.filter_by(username=username).first()
+
+    print("LOGIN TEST: " + password)
+    print("HASH LOGIN TEST: " + user.password)
+
+    if user and bcrypt.check_password_hash(user.password, password):
+        login_user(user)
+        return jsonify({'message': 'Login successful!', 'status': 'success'})
+    else:
+        return jsonify({'message': 'Invalid username or password', 'status': 'fail'}), 401
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=80, debug=True)
