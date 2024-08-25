@@ -6,6 +6,12 @@ import cv2
 import base64
 from io import BytesIO
 import requests
+import re
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Initialize the Flask app
 app = Flask(__name__)
@@ -104,6 +110,51 @@ def predict():
    
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+    
+# Function to validate username
+def validate_username(username):
+    # Check if the username is between 3 to 16 characters
+    if len(username) < 3 or len(username) > 16:
+        return False, "length-issue"
+    # Check if the username contains only alphanumeric characters (no special characters)
+    if not re.match("^[A-Za-z0-9]+$", username):
+        return False, "character-issue"
+    return True, "no-issue"
+
+# Function to validate password
+def validate_password(password):
+    # Check if the password is between 4 to 50 characters
+    return 4 <= len(password) <= 50
+
+@app.route('/signup', methods=['POST'])
+def signup():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+
+    # Validate email
+    ##try:
+        # This will validate the email and also check the MX record
+    ##   valid = validate_email(email, check_deliverability=True)
+    ##    email = valid.email
+    ##except EmailNotValidError as e:
+    ##    return jsonify({'message': str(e), 'status': 'fail'})
+
+    # Validate username
+    user_is_valid, issue = validate_username(username)
+    if not user_is_valid and issue == 'length-issue':
+        return jsonify({'message': 'Username must be between 3 to 16 characters.', 'status': 'fail'})
+    elif not user_is_valid and issue == 'character-issue':
+        return jsonify({'message': 'Username must contain no special characters.', 'status': 'fail'})
+
+
+    # Validate password
+    if not validate_password(password):
+        return jsonify({'message': 'Password must be between 4 to 50 characters in length.', 'status': 'fail'})
+
+    # If all validations pass
+    return jsonify({'message': 'Thank you! You are now logged in.', 'status': 'success'})
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=80, debug=True)
