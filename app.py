@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_bcrypt import Bcrypt
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from ultralytics import YOLO
 from PIL import Image
 import numpy as np
@@ -12,6 +13,15 @@ import requests
 import re
 import os
 from dotenv import load_dotenv
+from pymongo import MongoClient
+
+client = MongoClient('localhost', 27017)
+
+# Create or connect to the database
+db = client['calorie_app_user_database']
+
+# Create or connect to the collection
+users_collection = db['userscollection']
 
 # Load environment variables from .env file
 load_dotenv()
@@ -23,6 +33,8 @@ POSTGRES_USERNAME = os.getenv("SQL_SERVER_USERNAME")
 POSTGRES_PASSWORD = os.getenv("SQL_SERVER_PASSWORD")
 POSTGRES_DATABASE_NAME = os.getenv("SQL_SERVER_DATABASE_NAME")
 
+DEFUALT_CREDITS_AMOUNT = int(os.getenv("DEFAULT_CREDITS_AMOUNT"))
+
 # Configurations
 app.config['SQLALCHEMY_DATABASE_URI'] = f'postgresql+psycopg2://{POSTGRES_USERNAME}:{POSTGRES_PASSWORD}@localhost/{POSTGRES_DATABASE_NAME}'
 app.config['SECRET_KEY'] = os.urandom(24)
@@ -31,6 +43,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # Initialize Extensions
 db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)
+jwt = JWTManager(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
@@ -54,6 +67,16 @@ def load_user(user_id):
 # Load the YOLOv8 model (you can replace 'yolov8n.pt' with your trained model)
 model = YOLO('yolov8n.pt')  # YOLOv8n is the nano version, replace with your model if needed
 model.to('cuda')
+
+# Function to add a new user
+def add_user(username, credits):
+    user = {
+        "username": username,
+        "credits": credits
+    }
+    # Insert the user into the collection
+    users_collection.insert_one(user)
+    print(f"User {username} added with {credits} credits.")
 
 def query_ollama(prompt):
     url = "http://localhost:11434/api/generate"  # Replace with your Ollama API endpoint
@@ -101,8 +124,25 @@ def process_image(img):
     return predictions
 
 @app.route('/upload', methods=['POST'])
+@jwt_required()
 def predict():
     try:
+        current_user = get_jwt_identity()
+        # very important, the line below will break the flask upload system if used
+        ##print("Upload User: " + current_user)
+        ##username = current_user['username']
+        username = current_user.get('username')
+
+        user = users_collection.find_one({"username": username})
+        user_credits = user.get("credits", 0)
+        if user_credits <= 0:
+            response = {
+                "predictions": "No credits means no uploads!",
+                "ollama_response": "If the app doesn't work try logging in again."
+            }
+            return jsonify(response)
+
+        print("UPLOAD JWT TEST: " + username)
         if 'file' in request.files:
             file = request.files['file']
             
@@ -111,13 +151,11 @@ def predict():
             
             # Load image using PIL
             img = Image.open(file)
-            
         elif 'image' in request.json:
             # Decode the base64 string
             image_data = request.json['image']
             image_data = base64.b64decode(image_data)
             img = Image.open(BytesIO(image_data))
-        
         else:
             return jsonify({'error': 'No image data provided'}), 400
 
@@ -126,7 +164,7 @@ def predict():
         #return_predctions = predictions
         # Extract class names from the predictions
         class_names = [item['class'] for item in predictions if 'class' in item]
-        names = " ".join(class_names)
+        names = ", ".join(class_names)
 
         #return jsonify(predictions)
 
@@ -134,11 +172,17 @@ def predict():
         ollama_response = query_ollama(f"What's some nutritional info about {names} such as calories")
 
         #return jsonify(predictions)
+        result = users_collection.find_one_and_update(
+            {"username": username},  # Filter to find the user by username
+            {"$inc": {"credits": -1}}, # Decrement the 'credits' field by 1
+            return_document=True
+        )
 
         # Combine predictions and Ollama response into one JSON response
         response = {
             "predictions": predictions,
-            "ollama_response": ollama_response
+            "ollama_response": ollama_response,
+            "credits": result.get('credits', 0)
         }
 
         return jsonify(response)
@@ -196,11 +240,9 @@ def signup():
     hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
     new_user = User(username=username, password=hashed_password)
     db.session.add(new_user)
-    db.session.commit()
+    add_user(username=username, credits=DEFUALT_CREDITS_AMOUNT)
     # If all validations pass
-
-    print("TEST: " + hashed_password)
-
+    
     return jsonify({'message': 'Registration successful! You can now log in.', 'status': 'success'})
 
 @app.route('/login', methods=['POST'])
@@ -211,14 +253,25 @@ def login():
 
     user = User.query.filter_by(username=username).first()
 
-    print("LOGIN TEST: " + password)
-    print("HASH LOGIN TEST: " + user.password)
-
     if user and bcrypt.check_password_hash(user.password, password):
         login_user(user)
-        return jsonify({'message': 'Login successful!', 'status': 'success'})
+        access_token = create_access_token(identity={'username': username})
+        return jsonify({'message': 'Login successful!','access_token': access_token, 'status': 'success'})
     else:
         return jsonify({'message': 'Invalid username or password', 'status': 'fail'}), 401
+
+@app.route('/checkcredits', methods=['GET'])
+@jwt_required()
+def checkusercredits():
+    print("launching check credits!")
+    current_user = get_jwt_identity()
+    username = current_user.get('username')
+    print("Check credits user: " + username)
+    user = users_collection.find_one({"username": username})
+    if user and 'credits' in user:
+        return jsonify({'username': username, 'credits': user['credits']}), 200
+    else:
+        return jsonify({'error': 'User not found or no credits available'}), 404
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=80, debug=True)
