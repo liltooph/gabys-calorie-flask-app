@@ -87,6 +87,7 @@ def query_ollama(prompt):
         "model": "llama2",
         "prompt": prompt,
         "stream": False,
+        "use_gpu": True,
     }
 
     print("Starting ollama query")
